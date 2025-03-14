@@ -71,7 +71,7 @@ app.prepare().then(() => {
 
   // ------------------ AUTH ROUTES ------------------
 
-  // Register: Create new user in MongoDB
+  // Register
   server.post("/api/register", async (req, res) => {
     const { username, password } = req.body;
     try {
@@ -90,18 +90,16 @@ app.prepare().then(() => {
     }
   });
 
-  // Login: Authenticate user
+  // Login
   server.post("/api/login", async (req, res) => {
     const { username, password } = req.body;
     try {
       const user = await User.findOne({ username });
       if (!user)
         return res.status(400).json({ message: "Invalid credentials" });
-
       const isMatch = await bcrypt.compare(password, user.password);
       if (!isMatch)
         return res.status(400).json({ message: "Invalid credentials" });
-
       const token = jwt.sign({ username }, JWT_SECRET, { expiresIn: "1h" });
       console.log("[LOGIN] User logged in:", username);
       return res.status(200).json({
@@ -116,7 +114,7 @@ app.prepare().then(() => {
     }
   });
 
-  // Upload Profile Picture
+  // Upload Profile Picture (optional, e.g. during registration)
   server.post(
     "/api/upload-profile",
     upload.single("avatar"),
@@ -139,7 +137,7 @@ app.prepare().then(() => {
     }
   );
 
-  // Update Profile (for displayName and avatar)
+  // Update Profile (update displayName and optionally avatar)
   server.post(
     "/api/update-profile",
     upload.single("avatar"),
@@ -155,6 +153,14 @@ app.prepare().then(() => {
         });
         if (!updated)
           return res.status(400).json({ message: "User not found" });
+
+        // Emit event to all clients so updated profile info is visible to everyone
+        io.emit("profileUpdated", {
+          username: updated.username,
+          avatar: updated.avatar,
+          displayName: updated.displayName,
+        });
+
         return res.status(200).json({
           username: updated.username,
           avatar: updated.avatar,

@@ -10,20 +10,43 @@ const EmojiPicker = dynamic(() => import("emoji-picker-react"), { ssr: false });
 
 export default function ChatPage() {
   const router = useRouter();
+
+  // Current logged-in user info
   const [user, setUser] = useState({
     username: "",
     avatar: "",
     displayName: "",
   });
+
+  // All registered users from the server
   const [allUsers, setAllUsers] = useState([]);
+
+  // List of usernames who are online
   const [onlineUsers, setOnlineUsers] = useState([]);
+
+  // All private messages keyed by username
+  // privateMessages["alice"] = [ { from, message, attachment, timestamp }, ... ]
   const [privateMessages, setPrivateMessages] = useState({});
+
+  // The currently selected user in the chat
   const [activeChatUser, setActiveChatUser] = useState(null);
+
+  // Track unread messages
+  const [unreadCounts, setUnreadCounts] = useState({});
+
+  // For sending new messages
   const [message, setMessage] = useState("");
   const [attachment, setAttachment] = useState(null);
+
+  // Show/hide the emoji picker
   const [showEmojiPicker, setShowEmojiPicker] = useState(false);
+
+  // Keep a reference to the socket
   const socketRef = useRef(null);
 
+  // ---------------------------
+  //  HOOK: on component mount
+  // ---------------------------
   useEffect(() => {
     // 1) Authentication check
     const token = localStorage.getItem("token");
@@ -49,7 +72,7 @@ export default function ChatPage() {
       .then((data) => setAllUsers(data))
       .catch((err) => console.error("Error fetching users:", err));
 
-    // 3) Connect via Socket.IO
+    // 3) Connect to Socket.IO
     if (!socketRef.current) {
       socketRef.current = io();
       socketRef.current.emit("join", {
@@ -63,9 +86,21 @@ export default function ChatPage() {
       setOnlineUsers(users);
     });
 
-    // 5) Listen for private messages
+    // 5) Listen for incoming private messages
     socketRef.current.on("privateMessage", (data) => {
       const { from, message, attachment } = data;
+
+      // If the message is from someone else and
+      // we are NOT actively viewing that user's chat,
+      // increment unread count
+      if (from !== user.username && from !== activeChatUser) {
+        setUnreadCounts((prev) => ({
+          ...prev,
+          [from]: (prev[from] || 0) + 1,
+        }));
+      }
+
+      // Update the privateMessages state
       setPrivateMessages((prev) => {
         const msgs = prev[from] || [];
         return {
@@ -78,13 +113,32 @@ export default function ChatPage() {
       });
     });
 
+    // 6) Listen for profile updates from any user
+    socketRef.current.on("profileUpdated", () => {
+      // Re-fetch the user list so changes are visible (avatar or displayName)
+      fetch("/api/users")
+        .then((res) => res.json())
+        .then((data) => setAllUsers(data))
+        .catch((err) => console.error("Error fetching users:", err));
+    });
+
+    // Cleanup on unmount
     return () => {
       socketRef.current.disconnect();
       socketRef.current = null;
     };
-  }, [router]);
+  }, [router, activeChatUser]);
 
-  // Load chat history for two users
+  // ----------------------------------
+  //  HELPER: Return displayName or username
+  // ----------------------------------
+  function getDisplayName(u) {
+    return u.displayName || u.username;
+  }
+
+  // ----------------------------------
+  //  LOAD chat history for user
+  // ----------------------------------
   async function loadChatHistory(otherUser) {
     if (!otherUser) return;
     try {
@@ -101,20 +155,29 @@ export default function ChatPage() {
     }
   }
 
-  // Handle selecting a user from sidebar
+  // ----------------------------------
+  //  SELECT user from sidebar
+  // ----------------------------------
   const handleSelectUser = async (username) => {
+    // Reset unread count for this user
+    setUnreadCounts((prev) => ({
+      ...prev,
+      [username]: 0,
+    }));
     setActiveChatUser(username);
     await loadChatHistory(username);
   };
 
-  // Handle sending a message (with optional attachment)
+  // ----------------------------------
+  //  SEND a private message
+  // ----------------------------------
   const sendPrivateMessage = async (e) => {
     e.preventDefault();
     if (!message.trim() || !activeChatUser) return;
 
     let attachmentUrl = "";
     if (attachment) {
-      // Upload attachment to /api/upload-attachment
+      // Upload the file to /api/upload-attachment
       const formData = new FormData();
       formData.append("attachment", attachment);
       const res = await fetch("/api/upload-attachment", {
@@ -126,7 +189,7 @@ export default function ChatPage() {
       setAttachment(null);
     }
 
-    // Update local UI immediately
+    // Update local messages immediately
     setPrivateMessages((prev) => {
       const msgs = prev[activeChatUser] || [];
       return {
@@ -143,23 +206,29 @@ export default function ChatPage() {
       };
     });
 
-    // Emit message via Socket.IO
+    // Emit message to server
     socketRef.current.emit("privateMessage", {
       from: user.username,
       to: activeChatUser,
       message,
       attachment: attachmentUrl,
     });
+
+    // Clear input
     setMessage("");
   };
 
-  // Emoji picker callback
+  // ----------------------------------
+  //  EMOJI PICKER callback
+  // ----------------------------------
   const onEmojiClick = (emojiData) => {
     setMessage((prev) => prev + emojiData.emoji);
     setShowEmojiPicker(false);
   };
 
-  // Logout
+  // ----------------------------------
+  //  LOGOUT
+  // ----------------------------------
   const handleLogout = () => {
     localStorage.removeItem("token");
     localStorage.removeItem("username");
@@ -168,58 +237,87 @@ export default function ChatPage() {
     router.push("/login");
   };
 
-  // Exclude current user from sidebar list
+  // ----------------------------------
+  //  Which user are we chatting with?
+  // ----------------------------------
+  const activeUserObj = allUsers.find((u) => u.username === activeChatUser);
+  const chatHeader = activeUserObj
+    ? getDisplayName(activeUserObj)
+    : activeChatUser;
+
+  // ----------------------------------
+  //  Build the list of displayable users
+  // ----------------------------------
   const displayedUsers = allUsers
     .filter((u) => u.username !== user.username)
-    .map((u) => ({ ...u, online: onlineUsers.includes(u.username) }));
+    .map((u) => ({
+      ...u,
+      online: onlineUsers.includes(u.username),
+    }));
 
+  // ----------------------------------
+  //  MESSAGES for the active user
+  // ----------------------------------
   const activeMessages = privateMessages[activeChatUser] || [];
 
+  // ----------------------------------
+  //  RENDER
+  // ----------------------------------
   return (
-    <div style={styles.container}>
-      <header style={styles.header}>
+    <div style={styles.container} className="chatContainer">
+      {/* HEADER */}
+      <header style={styles.header} className="chatHeader">
         <h1 style={styles.title}>Futuristic Chat</h1>
         <button style={styles.logoutButton} onClick={handleLogout}>
           Logout
         </button>
       </header>
 
-      <div style={styles.mainArea}>
-        {/* Sidebar */}
-        <div style={styles.sidebar}>
+      {/* MAIN AREA: SIDEBAR + CHAT */}
+      <div style={styles.mainArea} className="chatMainArea">
+        {/* SIDEBAR */}
+        <div style={styles.sidebar} className="chatSidebar">
           <h2>All Users</h2>
           {displayedUsers.length === 0 ? (
             <div>No registered users</div>
           ) : (
-            displayedUsers.map((u) => (
-              <div
-                key={u.username}
-                style={{
-                  ...styles.userItem,
-                  backgroundColor:
-                    u.username === activeChatUser ? "#e0e0e0" : "transparent",
-                  borderLeft: u.online
-                    ? "4px solid #4CAF50"
-                    : "4px solid transparent",
-                }}
-                onClick={() => handleSelectUser(u.username)}
-              >
-                <img
-                  src={u.avatar || "/default-avatar.png"}
-                  alt="avatar"
+            displayedUsers.map((u) => {
+              const unread = unreadCounts[u.username] || 0;
+              return (
+                <div
+                  key={u.username}
                   style={{
-                    width: "30px",
-                    height: "30px",
-                    borderRadius: "50%",
-                    marginRight: "8px",
+                    ...styles.userItem,
+                    backgroundColor:
+                      u.username === activeChatUser ? "#e0e0e0" : "transparent",
+                    borderLeft: u.online
+                      ? "4px solid #4CAF50"
+                      : "4px solid transparent",
                   }}
-                />
-                {u.username} {u.displayName && `(${u.displayName})`}
-              </div>
-            ))
+                  className="chatUserItem"
+                  onClick={() => handleSelectUser(u.username)}
+                >
+                  <img
+                    src={u.avatar || "/default-avatar.png"}
+                    alt="avatar"
+                    style={{
+                      width: "30px",
+                      height: "30px",
+                      borderRadius: "50%",
+                      marginRight: "8px",
+                    }}
+                  />
+                  {getDisplayName(u)}
+                  {unread > 0 && (
+                    <span style={styles.unreadBadge}>{unread}</span>
+                  )}
+                </div>
+              );
+            })
           )}
-          {/* Current user's profile at bottom with update option */}
-          <div style={styles.myProfile}>
+
+          {/* CURRENT USER'S PROFILE at bottom */}
+          <div style={styles.myProfile} className="chatMyProfile">
             <img
               src={user.avatar || "/default-avatar.png"}
               alt="My avatar"
@@ -231,7 +329,7 @@ export default function ChatPage() {
               }}
             />
             <div>
-              <div>{user.username}</div>
+              <div>{getDisplayName(user)}</div>
               <div>
                 <a
                   href="/update-profile"
@@ -244,16 +342,16 @@ export default function ChatPage() {
           </div>
         </div>
 
-        {/* Chat Area */}
-        <div style={styles.chatArea}>
+        {/* CHAT AREA */}
+        <div style={styles.chatArea} className="chatChatArea">
           {!activeChatUser ? (
-            <div style={styles.placeholder}>
+            <div style={styles.placeholder} className="chatPlaceholder">
               <h2>Select a user from the sidebar to start a chat</h2>
             </div>
           ) : (
             <>
-              <h2>Chat with {activeChatUser}</h2>
-              <div style={styles.privateChatBox}>
+              <h2>Chat with {chatHeader}</h2>
+              <div style={styles.privateChatBox} className="chatPrivateChatBox">
                 {activeMessages.map((msg, idx) => (
                   <div
                     key={idx}
@@ -265,7 +363,10 @@ export default function ChatPage() {
                         msg.from === user.username ? "flex-end" : "flex-start",
                     }}
                   >
-                    <div style={styles.messageBubble}>
+                    <div
+                      style={styles.messageBubble}
+                      className="chatMessageBubble"
+                    >
                       <strong>{msg.from}</strong>: {msg.message}
                     </div>
                     {msg.attachment && (
@@ -282,18 +383,26 @@ export default function ChatPage() {
                   </div>
                 ))}
               </div>
-              <form onSubmit={sendPrivateMessage} style={styles.form}>
+
+              {/* FORM to send a new message */}
+              <form
+                onSubmit={sendPrivateMessage}
+                style={styles.form}
+                className="chatForm"
+              >
                 <button
                   type="button"
                   style={styles.emojiButton}
+                  className="chatEmojiButton"
                   onClick={() => setShowEmojiPicker(!showEmojiPicker)}
                 >
                   😊
                 </button>
                 <input
                   style={styles.input}
+                  className="chatInput"
                   type="text"
-                  placeholder={`Message ${activeChatUser}...`}
+                  placeholder={`Message ${chatHeader}...`}
                   value={message}
                   onChange={(e) => setMessage(e.target.value)}
                 />
@@ -303,7 +412,11 @@ export default function ChatPage() {
                   onChange={(e) => setAttachment(e.target.files[0])}
                   style={{ marginRight: "0.5rem" }}
                 />
-                <button style={styles.sendButton} type="submit">
+                <button
+                  style={styles.sendButton}
+                  className="chatSendButton"
+                  type="submit"
+                >
                   Send
                 </button>
               </form>
@@ -312,16 +425,37 @@ export default function ChatPage() {
         </div>
       </div>
 
-      {/* Emoji Picker */}
+      {/* EMOJI PICKER */}
       {showEmojiPicker && (
-        <div style={styles.emojiPicker}>
+        <div style={styles.emojiPicker} className="chatEmojiPicker">
           <EmojiPicker onEmojiClick={onEmojiClick} />
         </div>
       )}
+
+      {/* MEDIA QUERIES for RESPONSIVENESS */}
+      <style jsx global>{`
+        @media (max-width: 768px) {
+          .chatMainArea {
+            flex-direction: column !important;
+          }
+          .chatSidebar {
+            width: 100% !important;
+            border-right: none !important;
+            border-bottom: 2px solid #4caf50 !important;
+          }
+          .chatChatArea {
+            width: 100% !important;
+            order: 2;
+          }
+        }
+      `}</style>
     </div>
   );
 }
 
+// ----------------------------------
+//  INLINE STYLES (DESKTOP DEFAULT)
+// ----------------------------------
 const styles = {
   container: {
     display: "flex",
@@ -372,6 +506,14 @@ const styles = {
     cursor: "pointer",
     borderRadius: "4px",
     color: "#333",
+  },
+  unreadBadge: {
+    backgroundColor: "red",
+    color: "#fff",
+    borderRadius: "50%",
+    padding: "2px 6px",
+    marginLeft: "8px",
+    fontSize: "0.8rem",
   },
   myProfile: {
     marginTop: "auto",

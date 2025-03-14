@@ -12,7 +12,6 @@ export default function UpdateProfile() {
   const [message, setMessage] = useState("");
 
   useEffect(() => {
-    // Retrieve stored user data from localStorage
     const storedUsername = localStorage.getItem("username");
     const storedDisplayName =
       localStorage.getItem("displayName") || storedUsername;
@@ -33,27 +32,23 @@ export default function UpdateProfile() {
 
   const handleSubmit = async (e) => {
     e.preventDefault();
-
     const formData = new FormData();
     formData.append("username", username);
     formData.append("displayName", displayName);
     if (avatar) {
       formData.append("avatar", avatar);
     }
-
     try {
       const res = await fetch("/api/update-profile", {
         method: "POST",
         body: formData,
       });
       const data = await res.json();
-
       if (res.ok) {
-        // Update localStorage with the new profile data
         localStorage.setItem("avatar", data.avatar);
         localStorage.setItem("displayName", data.displayName);
         setMessage("Profile updated successfully!");
-        // Redirect to home or another page if needed
+        router.refresh();
         router.push("/");
       } else {
         setMessage(data.message || "Failed to update profile");
