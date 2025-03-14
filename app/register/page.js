@@ -70,8 +70,6 @@ export default function RegisterPage() {
   );
 }
 
-
-
 const styles = {
   container: {
     minHeight: "100vh",
